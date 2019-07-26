@@ -1,0 +1,166 @@
+---
+title: "Practical Machine Learning Project"
+author: "Edouard"
+date: "26/07/2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  
+
+Our data was collected from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har
+
+In the following sections, we use this data to build a prediction model. First, we'll select a reasonable number of features to train our model. Then, we have chosen the "random forest" method to train the model, with a 10-fold cross-validation. Despite slow execution, we managed to build the model, which predicts the performance class with a 98,6% accuracy. 
+
+```{r initiation, echo=FALSE, results = FALSE}
+library(knitr)
+library(caret)
+library(randomForest)
+set.seed(3859)
+```
+
+## Loading data and performing exploratory analysis
+
+We'll start with loading the data.
+Once the data is loaded, we divide the training set in two part, 80% in a new training set and 20% in a validation set. 
+
+```{r partition, echo=TRUE}
+if(!file.exists("./pml-training.csv")) {
+  trainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(trainUrl, destfile = "./pml-training.csv",method = "curl")
+  }
+training <- read.csv("./pml-training.csv")
+  
+if(!file.exists("./pml-testing.csv")) {
+  testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(testUrl, destfile = "./pml-testing.csv",method = "curl")
+  }
+testing <- read.csv("./pml-testing.csv")
+
+partition <- createDataPartition(y=training$classe,p=0.8, list=FALSE) 
+validation <- training[ -partition , ]
+training <- training[ partition , ]
+```
+
+Our data is now divided in 3 :  
+- training (`r dim(training)[1]` rows) for training our model  
+- validation (`r dim(validation)[1]` rows) for validating our model  
+- testing (`r dim(testing)[1]` rows) for testing our model  
+
+## Exploring the data
+
+Before training our model, we need to better understand our data. The following steps are applied to the training data only.
+
+```{r exploration, echo=TRUE}
+varstr <- data.frame(Admin = 7 , Belt = 38, Arm = 38, Dumbbell=38, Forearm=38, Classe = 1, Total = 160) 
+rownames(varstr)="# variables"
+kable(varstr)
+```
+
+Our data counts 160 columns. The first 7 variables account for information about the subject, time and window of measurement. For each sensor (glove, armband, lumbar belt and dumbbell), 38 variables were measured. The last column is the outcome, represented as a factor. 
+
+```{r simple_plot, echo=TRUE, fig.cap = "Figure 1 : Differences in pitch, yam, roll for belt measurement"}
+plot(training[,8:10],training$classe, col = training$classe)
+```
+
+```{r feature_plot, echo=TRUE, fig.cap = "Figure 2 : Feature plot"}
+featurePlot(cbind(training[,8:10], training[,46:48], training[,84:86], training[,122:124]),training$classe )
+```
+
+## Selecting the features
+
+At this point, we have too many features for training our model (`r dim(training)[2]-1` features). We need to select which ones are relevant and which ones are not.
+
+1/ Let's drop the information variables mentionning user_name, timestamp and window. These variables are too specific to be generalized to a larger population
+
+```{r feature_selection1, echo=TRUE}
+# 7 first variables are not interesting for prediction
+training <- training[, -(1:7)]
+dim(training)[2]-1
+```
+
+2/ We now have `r dim(training)[2]-1` variables. But a quick look shows that `r sum(colSums(is.na(training))>0)` of them have NAs. If the number of NA values was small, we could use neighbour values to impute a replacement value. However, that doesn't make sense if our variables have a majority of NA values. Let's drop the variables whose values are 80% NAs.
+
+```{r feature_selection2, echo=TRUE}
+# Let's delete variables where more than 80% of the measures are NA
+largeNA <- which(colSums(is.na(training))/length(training$X) >= 0.8)
+training <- training[, -largeNA]
+dim(training)[2]-1
+```
+
+3/ We now have `r dim(training)[2]-1` variables. Better ! Let's use the nearZeroVar command to drop the variables with low variance.  
+
+```{r feature_selection3, echo=TRUE}
+# Let's use nearZeroVar to delete variables whose variance is low
+training <- training[, -nearZeroVar(training)]
+dim(training)[2]-1
+```
+
+4/ We are now down to `r dim(training)[2]-1` variables. Let's use a correlation matrix to identify the variables with high correlation.  
+
+```{r feature_selection4, echo=TRUE}
+# Let's delete the variables highly correlated
+correlationMatrix <- cor(training[,-53])
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.8)
+training <- training[, -highlyCorrelated]
+dim(training)[2]-1
+```
+
+Finally, we have reduced the number of features from 159 to `r dim(training)[2]-1`. Let's stop here and select all remaining features to build our model.
+
+## Building our model
+
+Our training set has a lot of noise, it would be wise to use multiple trees to reduce overall variance. To do so, we choose to run a random forest algorithm. In addition, we use a 10-fold cross-validation. 
+
+However, the processing time turns out to be really slow. After several trials, it was decided to lower the number of trees from 500 to 10, which still provides a good accuracy, as shown below : 
+
+```{r model_building1, echo=TRUE}
+train_control <- trainControl(method="cv", number=10,savePredictions = TRUE, allowParallel = TRUE) 
+
+#Train Random Forest
+rf <- train(classe ~ ., data=training, trControl=train_control, method="rf", prox = TRUE, ntree = 10)
+  
+rf$resample
+```
+
+Although the accuracy of this model is good enough, it would be best to increase the number of trees to 50 if the computing power allows it. On one occasion, we managed to reach an accuracy of 99,6% with 50 trees, but it hasn't been possible to repeat the calculation due to computing power limitations, even when using parallel processing.  
+
+Random Forests are notoriously more difficult to interpret than other models. Let's pick one of the trees and see which features are most meaningful atop of the tree.
+
+```{r model_building2, echo=TRUE}
+#Display one of the trees and the variables at the top of the tree
+tree2 <- getTree(rf$finalModel, k=2) 
+head(tree2)
+index_tree2 <- tree2[1:6,3]
+colnames(training)[index_tree2]
+```
+
+Taking a look at this tree shows that the features above are key for our analysis.
+
+## Prediction on validation set
+
+```{r prediction, echo=TRUE}
+#Let's use our model on the validation set to confirm its validity
+predictions <- predict(rf, validation)
+confusionMatrix(predictions , validation$classe)
+```
+
+Our model gives the expected outcomes on the validation set.
+
+```{r accuracy, echo=TRUE}
+accur_val <- confusionMatrix(predictions, validation$classe)$overall["Accuracy"]
+1 - accur_val
+```
+
+Out of sample error is estimated at `r round(1 - accur_val,2)`.
+
+## Conclusion
+
+Using the Random Forest method, we built a model with a selection of 39 features extracted from the training set. The accuracy of this model is `r round(accur_val*100,2)`% on the validation dataset. On the next step, we will use this model on the test data.
